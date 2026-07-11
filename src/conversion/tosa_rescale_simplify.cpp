@@ -35,6 +35,14 @@ std::optional<int64_t> getScalarInt(Value value) {
     return (*values.value_begin<APInt>()).getSExtValue();
 }
 
+std::optional<int64_t> getIntegerAttrValue(Attribute attr) {
+    auto integerAttr = llvm::dyn_cast<IntegerAttr>(attr);
+    if (!integerAttr)
+        return std::nullopt;
+
+    return integerAttr.getValue().getSExtValue();
+}
+
 std::optional<std::pair<int64_t, int64_t>> getInterpretedIntegerRange(Value value, bool isUnsigned) {
     auto shapedType = llvm::dyn_cast<ShapedType>(value.getType());
     if (!shapedType)
@@ -49,6 +57,26 @@ std::optional<std::pair<int64_t, int64_t>> getInterpretedIntegerRange(Value valu
         return std::nullopt;
 
     if (isUnsigned)
+        return std::make_pair(int64_t{0}, (int64_t{1} << width) - 1);
+
+    return std::make_pair(-(int64_t{1} << (width - 1)), (int64_t{1} << (width - 1)) - 1);
+}
+
+std::optional<std::pair<int64_t, int64_t>> getNativeIntegerRange(Value value) {
+    auto shapedType = llvm::dyn_cast<ShapedType>(value.getType());
+    if (!shapedType)
+        return std::nullopt;
+
+    Type elementType = shapedType.getElementType();
+    auto integerType = llvm::dyn_cast<IntegerType>(elementType);
+    if (!integerType)
+        return std::nullopt;
+
+    const unsigned width = integerType.getWidth();
+    if (width == 0 || width >= 63)
+        return std::nullopt;
+
+    if (elementType.isUnsignedInteger())
         return std::make_pair(int64_t{0}, (int64_t{1} << width) - 1);
 
     return std::make_pair(-(int64_t{1} << (width - 1)), (int64_t{1} << (width - 1)) - 1);
@@ -246,6 +274,19 @@ bool isIdentityRescale(tosa::RescaleOp rescaleOp) {
     return isUnitScale(rescaleOp);
 }
 
+bool isIdentityClamp(tosa::ClampOp clampOp) {
+    if (clampOp.getInput().getType() != clampOp.getOutput().getType())
+        return false;
+
+    const std::optional<int64_t> minVal = getIntegerAttrValue(clampOp.getMinVal());
+    const std::optional<int64_t> maxVal = getIntegerAttrValue(clampOp.getMaxVal());
+    const std::optional<std::pair<int64_t, int64_t>> inputRange = getNativeIntegerRange(clampOp.getInput());
+    if (!minVal || !maxVal || !inputRange)
+        return false;
+
+    return *minVal <= inputRange->first && *maxVal >= inputRange->second;
+}
+
 Value createScalarShiftConst(PatternRewriter &rewriter, Location loc, Value originalShift, int64_t value) {
     auto shiftType = llvm::cast<ShapedType>(originalShift.getType());
     auto elementType = llvm::cast<IntegerType>(shiftType.getElementType());
@@ -262,6 +303,19 @@ class RemoveIdentityRescalePattern final : public OpRewritePattern<tosa::Rescale
             return failure();
 
         rewriter.replaceOp(rescaleOp, rescaleOp.getInput());
+        return success();
+    }
+};
+
+class RemoveIdentityClampPattern final : public OpRewritePattern<tosa::ClampOp> {
+  public:
+    using OpRewritePattern<tosa::ClampOp>::OpRewritePattern;
+
+    LogicalResult matchAndRewrite(tosa::ClampOp clampOp, PatternRewriter &rewriter) const override {
+        if (!isIdentityClamp(clampOp))
+            return failure();
+
+        rewriter.replaceOp(clampOp, clampOp.getInput());
         return success();
     }
 };
@@ -381,7 +435,8 @@ class TosaRescaleSimplifyPass final : public impl::TosaRescaleSimplifyPassBase<T
     void runOnOperation() override {
         RewritePatternSet patterns(&getContext());
         patterns.add<FoldExactLeftShiftProducerIntoConsumerPattern, FoldUnitScaleConsumerIntoProducerPattern,
-                     FoldUnitScaleRebaseIntoConsumerPattern, RemoveIdentityRescalePattern>(&getContext());
+                     FoldUnitScaleRebaseIntoConsumerPattern, RemoveIdentityClampPattern, RemoveIdentityRescalePattern>(
+            &getContext());
 
         if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
             return signalPassFailure();

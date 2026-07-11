@@ -110,6 +110,8 @@ def TosaRescaleSimplifyPass : Pass<"tosa-rescale-simplify", "func::FuncOp"> {
     Non-clipping scalar producers that are exact power-of-two left shifts can
     also be folded into a scalar consumer by reducing the consumer shift when
     exhaustive evaluation over the interpreted input range proves equivalence.
+    Integer clamp operations are removed when their min/max cover the full
+    represented input range.
   }];
 }
 

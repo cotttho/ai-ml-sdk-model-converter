@@ -109,4 +109,18 @@ module attributes {tosa.description = "TOSA rescale simplify test"} {
     %out = tosa.rescale %producer, %mult_consumer, %shift_consumer, %intermediate_zp, %intermediate_zp {input_unsigned = false, output_unsigned = false, per_channel = false, rounding_mode = DOUBLE_ROUND, scale32 = true} : (tensor<1x4xi32>, tensor<1xi32>, tensor<1xi8>, tensor<1xi32>, tensor<1xi32>) -> tensor<1x4xi32>
     return %out : tensor<1x4xi32>
   }
+
+  // CHECK-LABEL: func.func @identity_clamp_remove(
+  // CHECK-NOT: tosa.clamp
+  func.func @identity_clamp_remove(%arg0: tensor<1x4xi8>) -> tensor<1x4xi8> {
+    %out = tosa.clamp %arg0 {max_val = 127 : i8, min_val = -128 : i8} : (tensor<1x4xi8>) -> tensor<1x4xi8>
+    return %out : tensor<1x4xi8>
+  }
+
+  // CHECK-LABEL: func.func @activation_clamp_keep(
+  // CHECK: tosa.clamp
+  func.func @activation_clamp_keep(%arg0: tensor<1x4xi8>) -> tensor<1x4xi8> {
+    %out = tosa.clamp %arg0 {max_val = 127 : i8, min_val = 0 : i8} : (tensor<1x4xi8>) -> tensor<1x4xi8>
+    return %out : tensor<1x4xi8>
+  }
 }
