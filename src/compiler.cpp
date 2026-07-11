@@ -97,6 +97,7 @@ void Compiler::SetPassManager() {
         funcNestedPM.addPass(mlir::tosa::createTosaConvertIntegerTypeToSignless());
         // Inline dense resources for now until properly handled throughout the stack
         funcNestedPM.addPass(createDenseResourceInlinerPass());
+        funcNestedPM.addPass(createTosaRescaleSimplifyPass());
     }
 
     if (_options.require_static_shape) {

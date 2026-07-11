@@ -26,6 +26,7 @@ int main(int argc, char **argv) {
     registerModelPartitioningPass();
     registerSerializeVGFPass();
     registerTypeNarrowingPass();
+    registerTosaRescaleSimplifyPass();
     registerVGFConstantsPass();
     tosa::registerTosaPasses();
 

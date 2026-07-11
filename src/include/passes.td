@@ -97,4 +97,13 @@ def DenseResourceInlinerPass : Pass<"dense-resource-inliner", "func::FuncOp"> {
   let description = [{}];
 }
 
+def TosaRescaleSimplifyPass : Pass<"tosa-rescale-simplify", "func::FuncOp"> {
+  let summary = "Simplify exact no-op TOSA rescale operations";
+  let description = [{
+    Remove TOSA rescale operations that are provably identity transforms:
+    the input and output tensor types match, signedness matches, input/output
+    zero-points match, and the scalar multiplier/shift pair represents 1.0.
+  }];
+}
+
 #endif // MLIR_CONVERSION_PASSES
