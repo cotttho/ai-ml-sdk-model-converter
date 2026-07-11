@@ -167,6 +167,67 @@ bool scalarRescaleCannotClip(tosa::RescaleOp rescaleOp) {
     return rescaledMin >= outputRange->first && rescaledMax <= outputRange->second;
 }
 
+std::optional<int64_t> evaluateRescale(tosa::RescaleOp rescaleOp, int64_t input) {
+    const std::optional<int64_t> multiplier = getScalarInt(rescaleOp.getMultiplier());
+    const std::optional<int64_t> shift = getScalarInt(rescaleOp.getShift());
+    const std::optional<int64_t> inputZp = getScalarInt(rescaleOp.getInputZp());
+    const std::optional<int64_t> outputZp = getScalarInt(rescaleOp.getOutputZp());
+    const std::optional<std::pair<int64_t, int64_t>> outputRange =
+        getInterpretedIntegerRange(rescaleOp.getOutput(), rescaleOp.getOutputUnsigned());
+    if (!multiplier || !shift || !inputZp || !outputZp || !outputRange)
+        return std::nullopt;
+
+    const bool doubleRound = rescaleOp.getScale32() && rescaleOp.getRoundingMode() == tosa::RoundingMode::DOUBLE_ROUND;
+    const std::optional<int64_t> scaled = applyScaleToBound(input - *inputZp, *multiplier, *shift, doubleRound);
+    if (!scaled)
+        return std::nullopt;
+
+    return std::clamp(*scaled + *outputZp, outputRange->first, outputRange->second);
+}
+
+std::optional<int64_t> evaluateFoldedLeftShiftRescale(tosa::RescaleOp producerOp, tosa::RescaleOp consumerOp,
+                                                      int64_t adjustedShift, int64_t input) {
+    const std::optional<int64_t> multiplier = getScalarInt(consumerOp.getMultiplier());
+    const std::optional<int64_t> inputZp = getScalarInt(producerOp.getInputZp());
+    const std::optional<int64_t> outputZp = getScalarInt(consumerOp.getOutputZp());
+    const std::optional<std::pair<int64_t, int64_t>> outputRange =
+        getInterpretedIntegerRange(consumerOp.getOutput(), consumerOp.getOutputUnsigned());
+    if (!multiplier || !inputZp || !outputZp || !outputRange)
+        return std::nullopt;
+
+    const bool doubleRound = consumerOp.getScale32() && consumerOp.getRoundingMode() == tosa::RoundingMode::DOUBLE_ROUND;
+    const std::optional<int64_t> scaled = applyScaleToBound(input - *inputZp, *multiplier, adjustedShift, doubleRound);
+    if (!scaled)
+        return std::nullopt;
+
+    return std::clamp(*scaled + *outputZp, outputRange->first, outputRange->second);
+}
+
+bool leftShiftFoldIsExhaustivelyEquivalent(tosa::RescaleOp producerOp, tosa::RescaleOp consumerOp,
+                                           int64_t adjustedConsumerShift) {
+    const std::optional<std::pair<int64_t, int64_t>> inputRange =
+        getInterpretedIntegerRange(producerOp.getInput(), producerOp.getInputUnsigned());
+    if (!inputRange)
+        return false;
+
+    const int64_t inputValueCount = inputRange->second - inputRange->first + 1;
+    if (inputValueCount <= 0 || inputValueCount > 4096)
+        return false;
+
+    for (int64_t input = inputRange->first; input <= inputRange->second; ++input) {
+        const std::optional<int64_t> producerOutput = evaluateRescale(producerOp, input);
+        if (!producerOutput)
+            return false;
+
+        const std::optional<int64_t> originalOutput = evaluateRescale(consumerOp, *producerOutput);
+        const std::optional<int64_t> foldedOutput =
+            evaluateFoldedLeftShiftRescale(producerOp, consumerOp, adjustedConsumerShift, input);
+        if (!originalOutput || !foldedOutput || *originalOutput != *foldedOutput)
+            return false;
+    }
+    return true;
+}
+
 bool isIdentityRescale(tosa::RescaleOp rescaleOp) {
     if (rescaleOp.getInput().getType() != rescaleOp.getOutput().getType())
         return false;
@@ -214,7 +275,7 @@ class FoldExactLeftShiftProducerIntoConsumerPattern final : public OpRewritePatt
         if (!producerOp || !producerOp.getOutput().hasOneUse())
             return failure();
 
-        if (consumerOp.getPerChannel() || consumerOp.getRoundingMode() != tosa::RoundingMode::SINGLE_ROUND)
+        if (consumerOp.getPerChannel())
             return failure();
 
         const std::optional<int64_t> producerLeftShift = getExactLeftShift(producerOp);
@@ -235,6 +296,9 @@ class FoldExactLeftShiftProducerIntoConsumerPattern final : public OpRewritePatt
             return failure();
 
         if (producerOp.getOutputUnsigned() != consumerOp.getInputUnsigned())
+            return failure();
+
+        if (!leftShiftFoldIsExhaustivelyEquivalent(producerOp, consumerOp, adjustedConsumerShift))
             return failure();
 
         rewriter.setInsertionPoint(consumerOp);
