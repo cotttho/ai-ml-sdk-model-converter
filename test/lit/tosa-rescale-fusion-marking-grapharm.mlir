@@ -9,8 +9,9 @@ module attributes {tosa.description = "TOSA rescale fusion GraphARM propagation 
   // CHECK-LABEL: IR Dump Before SerializeVGFPass
   // CHECK: vgf.segment @graph_partition_0
   // CHECK-SAME: segment_type = 0 : i32
-  // CHECK: spirv.Tosa.Rescale {{[^{}]*}} : (
-  // CHECK: spirv.Tosa.Rescale {{[^{}]*}} : (
+  // CHECK: spirv.ARM.Graph @graph_partition_0
+  // CHECK: %[[PRODUCER:[0-9]+]] = spirv.Tosa.Rescale {{.*}}, %arg{{[0-9]+}}, {{.*}} : (
+  // CHECK: spirv.Tosa.Rescale {{.*}}, %[[PRODUCER]], {{.*}} : (
   // CHECK-NOT: vgf.shader_placeholder
   // CHECK: Successfully saved vgf output
   func.func @main(%arg0: tensor<1x4xi8>) -> tensor<1x4xi32> {
