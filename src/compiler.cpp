@@ -134,8 +134,8 @@ void Compiler::SetPassManager() {
 
         _pm.addPass(createCheckConstantSparsityPass());
         _pm.addPass(createVGFConstantsPass(builder));
-        _pm.nest<vgf::SequenceOp>().addPass(createAssignGraphARMInterfaceVarABIPass());
         _pm.addPass(createConfiguredTosaToSPIRVPass(_options.analysis, _options.custom_op_domain_to_opcode));
+        _pm.nest<vgf::SequenceOp>().addPass(createAssignGraphARMInterfaceVarABIPass());
 
         {
             // SPIRV Module Passes

@@ -22,11 +22,11 @@ def VGFConstantsPass : Pass<"vgf-constants", "mlir::ModuleOp"> {
 }
 
 def AssignGraphARMInterfaceVarABIPass : Pass<"assign-grapharm-interface-var-abi", "mlir::vgf::SequenceOp"> {
-  let summary = "Assign GraphARM ABI carrier attrs to graph segment signatures";
+  let summary = "Assign GraphARM ABI attrs to graph segment signatures";
   let description = [{
     Computes the sequence-wide binding numbering currently used by VGF serialization
-    and annotates graph segment func.func arguments/results with
-    grapharm.interface_var_abi so tosa-to-spirv can preserve the final ABI.
+    and annotates graph segment spirv.ARM.Graph arguments/results with
+    spirv.interface_var_abi before SPIR-V ABI lowering.
   }];
   let dependentDialects = [
     "func::FuncDialect",

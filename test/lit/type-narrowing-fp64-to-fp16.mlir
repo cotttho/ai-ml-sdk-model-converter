@@ -3,21 +3,21 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 
-// RUN: model-converter-opt --tosa-narrow-f64-to-f32="aggressive-rewrite convert-function-boundaries" %s | FileCheck %s
+// RUN: model-converter-opt --type-narrowing="mode=full" %s | FileCheck %s
 
 module {
   // CHECK-LABEL: func.func @f64_add
-  // CHECK-SAME: tensor<1xf32>
+  // CHECK-SAME: tensor<1xf16>
   // CHECK: tosa.add
-  // CHECK-SAME: (tensor<1xf32>, tensor<1xf32>) -> tensor<1xf32>
+  // CHECK-SAME: (tensor<1xf16>, tensor<1xf16>) -> tensor<1xf16>
   func.func @f64_add(%arg0: tensor<1xf64>, %arg1: tensor<1xf64>) -> tensor<1xf64> {
     %0 = tosa.add %arg0, %arg1 : (tensor<1xf64>, tensor<1xf64>) -> tensor<1xf64>
     return %0 : tensor<1xf64>
   }
 
   // CHECK-LABEL: func.func @f64_const
-  // CHECK-SAME: tensor<1xf32>
-  // CHECK: "tosa.const"() <{values = dense<1.000000e+00> : tensor<1xf32>}> : () -> tensor<1xf32>
+  // CHECK-SAME: tensor<1xf16>
+  // CHECK: "tosa.const"() <{values = dense<1.000000e+00> : tensor<1xf16>}> : () -> tensor<1xf16>
   func.func @f64_const() -> tensor<1xf64> {
     %0 = "tosa.const"() <{values = dense<1.000000e+00> : tensor<1xf64>}> : () -> tensor<1xf64>
     return %0 : tensor<1xf64>

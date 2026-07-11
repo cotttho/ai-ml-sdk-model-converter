@@ -176,7 +176,12 @@ class TypeNarrowingPass final : public impl::TypeNarrowingPassBase<TypeNarrowing
 
         TypeConverter typeConverter;
         typeConverter.addConversion([&](FloatType) { return Float16Type::get(ctx); });
-        typeConverter.addConversion([&](TensorType type) { return type.clone(Float16Type::get(ctx)); });
+        typeConverter.addConversion([&](TensorType type) -> Type {
+            if (llvm::isa<FloatType>(type.getElementType())) {
+                return type.clone(Float16Type::get(ctx));
+            }
+            return type;
+        });
 
         typeConverter.addSourceMaterialization([](OpBuilder &builder, Type type, ValueRange inputs, Location loc) {
             return tosa::CastOp::create(builder, loc, type, inputs);

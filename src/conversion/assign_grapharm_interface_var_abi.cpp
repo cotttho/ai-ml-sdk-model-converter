@@ -5,7 +5,7 @@
 
 #include "include/passes.hpp"
 
-#include "mlir/Conversion/TosaToSPIRV/TosaToSPIRV.h"
+#include "mlir/Dialect/SPIRV/IR/SPIRVOps.h"
 #include "mlir/Dialect/SPIRV/IR/TargetAndABI.h"
 #include "llvm/ADT/STLExtras.h"
 
@@ -110,35 +110,34 @@ class AssignGraphARMInterfaceVarABIPass
                 return WalkResult::interrupt();
             }
 
-            auto funcRange = segmentOp.getOps<func::FuncOp>();
-            auto funcIt = funcRange.begin();
-            if (funcIt == funcRange.end()) {
-                segmentOp.emitError("expected graph segment to contain a func.func");
+            SmallVector<spirv::GraphARMOp, 1> graphOps;
+            segmentOp.walk([&](spirv::GraphARMOp graphOp) { graphOps.push_back(graphOp); });
+            if (graphOps.empty()) {
+                segmentOp.emitError("expected graph segment to contain a spirv.ARM.Graph");
                 return WalkResult::interrupt();
             }
-            func::FuncOp funcOp = *funcIt;
-            ++funcIt;
-            if (funcIt != funcRange.end()) {
-                segmentOp.emitError("expected graph segment to contain a single func.func");
+            if (graphOps.size() != 1) {
+                segmentOp.emitError("expected graph segment to contain a single spirv.ARM.Graph");
                 return WalkResult::interrupt();
             }
+            spirv::GraphARMOp graphOp = graphOps.front();
 
-            if (runSegmentOp->getNumOperands() != funcOp.getNumArguments()) {
-                funcOp.emitError("segment run operand count does not match graph function arguments");
+            if (runSegmentOp->getNumOperands() != graphOp.getNumArguments()) {
+                graphOp.emitError("segment run operand count does not match graph arguments");
                 return WalkResult::interrupt();
             }
-            if (runSegmentOp->getNumResults() != funcOp.getNumResults()) {
-                funcOp.emitError("segment run result count does not match graph function results");
+            if (runSegmentOp->getNumResults() != graphOp.getNumResults()) {
+                graphOp.emitError("segment run result count does not match graph results");
                 return WalkResult::interrupt();
             }
 
             for (auto [argIndex, operand] : llvm::enumerate(runSegmentOp->getOperands())) {
-                funcOp.setArgAttr(static_cast<unsigned>(argIndex), spirv::getInterfaceVarABIAttrName(),
+                graphOp.setArgAttr(static_cast<unsigned>(argIndex), spirv::getInterfaceVarABIAttrName(),
                                   getInterfaceVarABIAttr(getBindingId(bindingIds, operand)));
             }
 
             for (auto [resultIndex, result] : llvm::enumerate(runSegmentOp->getResults())) {
-                funcOp.setResultAttr(static_cast<unsigned>(resultIndex), spirv::getInterfaceVarABIAttrName(),
+                graphOp.setResultAttr(static_cast<unsigned>(resultIndex), spirv::getInterfaceVarABIAttrName(),
                                      getInterfaceVarABIAttr(getBindingId(bindingIds, result)));
             }
 
