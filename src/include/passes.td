@@ -98,11 +98,15 @@ def DenseResourceInlinerPass : Pass<"dense-resource-inliner", "func::FuncOp"> {
 }
 
 def TosaRescaleSimplifyPass : Pass<"tosa-rescale-simplify", "func::FuncOp"> {
-  let summary = "Simplify exact no-op TOSA rescale operations";
+  let summary = "Simplify exact TOSA rescale operations";
   let description = [{
     Remove TOSA rescale operations that are provably identity transforms:
     the input and output tensor types match, signedness matches, input/output
     zero-points match, and the scalar multiplier/shift pair represents 1.0.
+    The pass also folds adjacent scalar rescale chains when one side is a
+    unit-scale rebase, the intermediate tensor is single-use, and the removed
+    intermediate clamp is proven not to affect any value in the interpreted
+    input range.
   }];
 }
 

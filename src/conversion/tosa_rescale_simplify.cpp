@@ -12,7 +12,9 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
+#include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <utility>
 
@@ -85,6 +87,58 @@ bool unitScaleRebaseCannotClip(tosa::RescaleOp rescaleOp) {
     return rebasedMin >= outputRange->first && rebasedMax <= outputRange->second;
 }
 
+std::optional<int64_t> applyScaleToBound(int64_t value, int64_t multiplier, int64_t shift, bool doubleRound) {
+    if (shift < 1 || shift > 62)
+        return std::nullopt;
+
+    __int128 round = __int128{1} << (shift - 1);
+    if (doubleRound && shift > 31)
+        round += value >= 0 ? (__int128{1} << 30) : -(__int128{1} << 30);
+
+    __int128 result = static_cast<__int128>(value) * static_cast<__int128>(multiplier);
+    result += round;
+    result >>= shift;
+
+    if (result < std::numeric_limits<int32_t>::min() || result > std::numeric_limits<int32_t>::max())
+        return std::nullopt;
+
+    return static_cast<int64_t>(result);
+}
+
+bool scalarRescaleCannotClip(tosa::RescaleOp rescaleOp) {
+    if (rescaleOp.getPerChannel())
+        return false;
+
+    const std::optional<int64_t> multiplier = getScalarInt(rescaleOp.getMultiplier());
+    const std::optional<int64_t> shift = getScalarInt(rescaleOp.getShift());
+    const std::optional<int64_t> inputZp = getScalarInt(rescaleOp.getInputZp());
+    const std::optional<int64_t> outputZp = getScalarInt(rescaleOp.getOutputZp());
+    if (!multiplier || !shift || !inputZp || !outputZp)
+        return false;
+
+    if (*multiplier < 0)
+        return false;
+
+    const std::optional<std::pair<int64_t, int64_t>> inputRange =
+        getInterpretedIntegerRange(rescaleOp.getInput(), rescaleOp.getInputUnsigned());
+    const std::optional<std::pair<int64_t, int64_t>> outputRange =
+        getInterpretedIntegerRange(rescaleOp.getOutput(), rescaleOp.getOutputUnsigned());
+    if (!inputRange || !outputRange)
+        return false;
+
+    const bool doubleRound = rescaleOp.getScale32() && rescaleOp.getRoundingMode() == tosa::RoundingMode::DOUBLE_ROUND;
+    const std::optional<int64_t> scaledLower =
+        applyScaleToBound(inputRange->first - *inputZp, *multiplier, *shift, doubleRound);
+    const std::optional<int64_t> scaledUpper =
+        applyScaleToBound(inputRange->second - *inputZp, *multiplier, *shift, doubleRound);
+    if (!scaledLower || !scaledUpper)
+        return false;
+
+    const int64_t rescaledMin = std::min(*scaledLower, *scaledUpper) + *outputZp;
+    const int64_t rescaledMax = std::max(*scaledLower, *scaledUpper) + *outputZp;
+    return rescaledMin >= outputRange->first && rescaledMax <= outputRange->second;
+}
+
 bool isIdentityRescale(tosa::RescaleOp rescaleOp) {
     if (rescaleOp.getInput().getType() != rescaleOp.getOutput().getType())
         return false;
@@ -146,10 +200,44 @@ class FoldUnitScaleRebaseIntoConsumerPattern final : public OpRewritePattern<tos
     }
 };
 
+class FoldUnitScaleConsumerIntoProducerPattern final : public OpRewritePattern<tosa::RescaleOp> {
+  public:
+    using OpRewritePattern<tosa::RescaleOp>::OpRewritePattern;
+
+    LogicalResult matchAndRewrite(tosa::RescaleOp consumerOp, PatternRewriter &rewriter) const override {
+        auto producerOp = consumerOp.getInput().getDefiningOp<tosa::RescaleOp>();
+        if (!producerOp || !producerOp.getOutput().hasOneUse())
+            return failure();
+
+        if (!isUnitScale(consumerOp) || !unitScaleRebaseCannotClip(consumerOp))
+            return failure();
+
+        if (!scalarRescaleCannotClip(producerOp))
+            return failure();
+
+        const std::optional<int64_t> producerOutputZp = getScalarInt(producerOp.getOutputZp());
+        const std::optional<int64_t> consumerInputZp = getScalarInt(consumerOp.getInputZp());
+        if (!producerOutputZp || !consumerInputZp || *producerOutputZp != *consumerInputZp)
+            return failure();
+
+        if (producerOp.getOutputUnsigned() != consumerOp.getInputUnsigned())
+            return failure();
+
+        rewriter.replaceOpWithNewOp<tosa::RescaleOp>(
+            consumerOp, consumerOp.getType(), producerOp.getInput(), producerOp.getMultiplier(), producerOp.getShift(),
+            producerOp.getInputZp(), consumerOp.getOutputZp(), producerOp.getScale32Attr(),
+            producerOp.getRoundingModeAttr(), producerOp.getPerChannelAttr(), producerOp.getInputUnsignedAttr(),
+            consumerOp.getOutputUnsignedAttr());
+        rewriter.eraseOp(producerOp);
+        return success();
+    }
+};
+
 class TosaRescaleSimplifyPass final : public impl::TosaRescaleSimplifyPassBase<TosaRescaleSimplifyPass> {
     void runOnOperation() override {
         RewritePatternSet patterns(&getContext());
-        patterns.add<FoldUnitScaleRebaseIntoConsumerPattern, RemoveIdentityRescalePattern>(&getContext());
+        patterns.add<FoldUnitScaleConsumerIntoProducerPattern, FoldUnitScaleRebaseIntoConsumerPattern,
+                     RemoveIdentityRescalePattern>(&getContext());
 
         if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
             return signalPassFailure();
