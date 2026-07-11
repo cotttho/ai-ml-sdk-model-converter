@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include "mlir/IR/BuiltinTypes.h"
+
 #include <vgf/encoder.hpp>
 
 #include <algorithm>
@@ -92,9 +94,9 @@ class VGFBuilder {
             format = VkFormat::VK_FORMAT_R32_SFLOAT;
         } else if (mlirType.isBF16()) {
             format = VkFormat::VK_FORMAT_R16_SFLOAT_FPENCODING_BFLOAT16_ARM;
-        } else if (mlirType.isF8E4M3FN()) {
+        } else if (llvm::isa<mlir::Float8E4M3FNType>(mlirType)) {
             format = VkFormat::VK_FORMAT_R8_SFLOAT_FPENCODING_FLOAT8E4M3_ARM;
-        } else if (mlirType.isF8E5M2()) {
+        } else if (llvm::isa<mlir::Float8E5M2Type>(mlirType)) {
             format = VkFormat::VK_FORMAT_R8_SFLOAT_FPENCODING_FLOAT8E5M2_ARM;
         } else {
             return mlir::failure();
