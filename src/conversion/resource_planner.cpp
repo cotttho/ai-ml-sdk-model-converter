@@ -22,61 +22,6 @@ namespace {
 // As defined in vulkan_core.h
 constexpr DescriptorType DESCRIPTOR_TYPE_TENSOR_ARM = 1000460000;
 constexpr StringRef UNSIGNED_INPUT_OUTPUT_ATTR = "mlsdk.unsigned_input_output";
-constexpr StringRef MIN_FILTER_ATTR = "min_filter";
-constexpr StringRef MAG_FILTER_ATTR = "mag_filter";
-constexpr StringRef ADDRESS_MODE_U_ATTR = "address_mode_u";
-constexpr StringRef ADDRESS_MODE_V_ATTR = "address_mode_v";
-constexpr StringRef BORDER_COLOR_ATTR = "border_color";
-
-template <typename ParseFn> uint32_t parseSamplerEnumValue(const StringRef name, ParseFn &&parseFn) {
-    if (name.empty()) {
-        return UNSET_SAMPLER_VALUE;
-    }
-    const auto value = parseFn(name.str());
-    return value < 0 ? UNSET_SAMPLER_VALUE : static_cast<uint32_t>(value);
-}
-
-uint32_t parseSamplerFilter(const StringRef name) { return parseSamplerEnumValue(name, NameToFilterType); }
-
-uint32_t parseSamplerAddressMode(const StringRef name) {
-    return parseSamplerEnumValue(name, NameToSamplerAddressModeType);
-}
-
-uint32_t parseSamplerBorderColor(const StringRef name) { return parseSamplerEnumValue(name, NameToBorderColorType); }
-
-DictionaryAttr getSamplerConfig(ArrayAttr samplerConfigsAttr, size_t index) {
-    if (!samplerConfigsAttr || index >= samplerConfigsAttr.size()) {
-        return nullptr;
-    }
-    return llvm::dyn_cast<DictionaryAttr>(samplerConfigsAttr[static_cast<unsigned>(index)]);
-}
-
-uint32_t getSamplerValue(DictionaryAttr samplerConfigAttr, StringRef key,
-                         const std::function<uint32_t(StringRef)> &parseFn) {
-    if (!samplerConfigAttr) {
-        return UNSET_SAMPLER_VALUE;
-    }
-    auto valueAttr = samplerConfigAttr.getAs<StringAttr>(key);
-    if (!valueAttr) {
-        return UNSET_SAMPLER_VALUE;
-    }
-    return parseFn(valueAttr.getValue());
-}
-
-std::optional<SamplerConfigValues> getOptionalSamplerConfigValues(ArrayAttr samplerConfigsAttr, size_t index) {
-    const auto samplerConfigAttr = getSamplerConfig(samplerConfigsAttr, index);
-    if (!samplerConfigAttr || samplerConfigAttr.empty()) {
-        return std::nullopt;
-    }
-
-    SamplerConfigValues samplerConfig;
-    samplerConfig.minFilter = getSamplerValue(samplerConfigAttr, MIN_FILTER_ATTR, parseSamplerFilter);
-    samplerConfig.magFilter = getSamplerValue(samplerConfigAttr, MAG_FILTER_ATTR, parseSamplerFilter);
-    samplerConfig.addressModeU = getSamplerValue(samplerConfigAttr, ADDRESS_MODE_U_ATTR, parseSamplerAddressMode);
-    samplerConfig.addressModeV = getSamplerValue(samplerConfigAttr, ADDRESS_MODE_V_ATTR, parseSamplerAddressMode);
-    samplerConfig.borderColor = getSamplerValue(samplerConfigAttr, BORDER_COLOR_ATTR, parseSamplerBorderColor);
-    return samplerConfig;
-}
 
 const std::vector<BindingSlotRef> &
 getSegmentBindings(const std::map<SegmentId, std::vector<BindingSlotRef>> &bindingsBySegment, SegmentId segmentId) {
@@ -106,7 +51,6 @@ LogicalResult ResourcePlanner::buildPlan() {
         return failure();
     }
 
-    finalizePlannedValues();
     return success();
 }
 
@@ -175,9 +119,8 @@ LogicalResult ResourcePlanner::getGraphView(Value value, StringRef role, StringR
     return success();
 }
 
-ResourceKey ResourcePlanner::makeResourceKey(ResourceCategory category, const ResourceViewKey &view,
-                                             std::optional<SamplerConfigValues> samplerConfig) {
-    return ResourceKey{category, view, samplerConfig};
+ResourceKey ResourcePlanner::makeResourceKey(ResourceCategory category, const ResourceViewKey &view) {
+    return ResourceKey{category, view};
 }
 
 FailureOr<PlannedValue *> ResourcePlanner::ensurePlannedValue(Value value, std::optional<uint32_t> bindingIndex) {
@@ -238,7 +181,6 @@ LogicalResult ResourcePlanner::collectSequenceInputs() {
             WalkResult segmentWalkResult;
             if (segmentType == vgf::SegmentTypeEnum::COMPUTE) {
                 segmentWalkResult = segmentOp.walk([&](vgf::ShaderPlaceholderOp shaderPlaceholderOp) {
-                    size_t ioIndex = 0;
                     for (const auto &[inputBinding, inputDescriptorType, inputVkFormat, inputDescriptorSet, input] :
                          llvm::zip(shaderPlaceholderOp.getInputBindings(),
                                    shaderPlaceholderOp.getInputVkDescriptorTypes(),
@@ -248,14 +190,10 @@ LogicalResult ResourcePlanner::collectSequenceInputs() {
                             const ResourceViewKey view = {
                                 NameToDescriptorType(llvm::cast<StringAttr>(inputDescriptorType).str()),
                                 NameToFormatType(llvm::cast<StringAttr>(inputVkFormat).str())};
-                            appendAttachment(
-                                _resourcePlan.sequenceInputAttachments, segmentId, input, false,
-                                makeResourceKey(ResourceCategory::INPUT, view,
-                                                getOptionalSamplerConfigValues(
-                                                    shaderPlaceholderOp.getInputSamplerConfigsAttr(), ioIndex)),
-                                inputDescriptorSet, static_cast<uint32_t>(inputBinding));
+                            appendAttachment(_resourcePlan.sequenceInputAttachments, segmentId, input, false,
+                                             makeResourceKey(ResourceCategory::INPUT, view), inputDescriptorSet,
+                                             static_cast<uint32_t>(inputBinding));
                         }
-                        ++ioIndex;
                     }
 
                     return WalkResult::advance();
@@ -303,7 +241,6 @@ LogicalResult ResourcePlanner::collectIntermediates() {
         WalkResult segmentWalkResult;
         if (segmentType == vgf::SegmentTypeEnum::COMPUTE) {
             segmentWalkResult = segmentOp.walk([&](vgf::ShaderPlaceholderOp shaderPlaceholderOp) {
-                size_t ioIndex = 0;
                 for (const auto &[inputBinding, inputDescriptorType, inputVkFormat, inputDescriptorSet, input] :
                      llvm::zip(shaderPlaceholderOp.getInputBindings(), shaderPlaceholderOp.getInputVkDescriptorTypes(),
                                shaderPlaceholderOp.getInputVkFormats(), shaderPlaceholderOp.getInputDescriptorSets(),
@@ -323,17 +260,12 @@ LogicalResult ResourcePlanner::collectIntermediates() {
                         const ResourceViewKey view = {
                             NameToDescriptorType(llvm::cast<StringAttr>(inputDescriptorType).str()),
                             NameToFormatType(llvm::cast<StringAttr>(inputVkFormat).str())};
-                        appendAttachment(
-                            _resourcePlan.intermediateAttachments, segmentId, input, false,
-                            makeResourceKey(ResourceCategory::INTERMEDIATE, view,
-                                            getOptionalSamplerConfigValues(
-                                                shaderPlaceholderOp.getInputSamplerConfigsAttr(), ioIndex)),
-                            inputDescriptorSet, static_cast<uint32_t>(inputBinding));
+                        appendAttachment(_resourcePlan.intermediateAttachments, segmentId, input, false,
+                                         makeResourceKey(ResourceCategory::INTERMEDIATE, view), inputDescriptorSet,
+                                         static_cast<uint32_t>(inputBinding));
                     }
-                    ++ioIndex;
                 }
 
-                ioIndex = 0;
                 for (const auto &[outputBinding, outputDescriptorType, outputVkFormat, outputDescriptorSet, result] :
                      llvm::zip(shaderPlaceholderOp.getOutputBindings(),
                                shaderPlaceholderOp.getOutputVkDescriptorTypes(),
@@ -354,14 +286,10 @@ LogicalResult ResourcePlanner::collectIntermediates() {
                         const ResourceViewKey view = {
                             NameToDescriptorType(llvm::cast<StringAttr>(outputDescriptorType).str()),
                             NameToFormatType(llvm::cast<StringAttr>(outputVkFormat).str())};
-                        appendAttachment(
-                            _resourcePlan.intermediateAttachments, segmentId, result, true,
-                            makeResourceKey(ResourceCategory::INTERMEDIATE, view,
-                                            getOptionalSamplerConfigValues(
-                                                shaderPlaceholderOp.getOutputSamplerConfigsAttr(), ioIndex)),
-                            outputDescriptorSet, static_cast<uint32_t>(outputBinding), true);
+                        appendAttachment(_resourcePlan.intermediateAttachments, segmentId, result, true,
+                                         makeResourceKey(ResourceCategory::INTERMEDIATE, view), outputDescriptorSet,
+                                         static_cast<uint32_t>(outputBinding), true);
                     }
-                    ++ioIndex;
                 }
                 return WalkResult::advance();
             });
@@ -466,7 +394,6 @@ LogicalResult ResourcePlanner::collectSequenceOutputs() {
             WalkResult segmentWalkResult;
             if (segmentType == vgf::SegmentTypeEnum::COMPUTE) {
                 segmentWalkResult = segmentOp.walk([&](vgf::ShaderPlaceholderOp shaderPlaceholderOp) {
-                    size_t ioIndex = 0;
                     for (const auto &[outputBinding, outputDescriptorType, outputVkFormat, outputDescriptorSet,
                                       result] :
                          llvm::zip(shaderPlaceholderOp.getOutputBindings(),
@@ -477,14 +404,10 @@ LogicalResult ResourcePlanner::collectSequenceOutputs() {
                             const ResourceViewKey view = {
                                 NameToDescriptorType(llvm::cast<StringAttr>(outputDescriptorType).str()),
                                 NameToFormatType(llvm::cast<StringAttr>(outputVkFormat).str())};
-                            appendAttachment(
-                                _resourcePlan.sequenceOutputAttachments, segmentId, result, true,
-                                makeResourceKey(ResourceCategory::OUTPUT, view,
-                                                getOptionalSamplerConfigValues(
-                                                    shaderPlaceholderOp.getOutputSamplerConfigsAttr(), ioIndex)),
-                                outputDescriptorSet, static_cast<uint32_t>(outputBinding), true);
+                            appendAttachment(_resourcePlan.sequenceOutputAttachments, segmentId, result, true,
+                                             makeResourceKey(ResourceCategory::OUTPUT, view), outputDescriptorSet,
+                                             static_cast<uint32_t>(outputBinding), true);
                         }
-                        ++ioIndex;
                     }
 
                     return WalkResult::advance();
@@ -530,35 +453,6 @@ LogicalResult ResourcePlanner::collectSequenceOutputs() {
     return success();
 }
 
-void ResourcePlanner::finalizePlannedValues() {
-    for (auto operand : _sequenceOp.getArguments()) {
-        finalizePlannedValue(operand);
-    }
-    for (auto value : _resourcePlan.intermediateValues) {
-        finalizePlannedValue(value);
-    }
-    for (auto operand : _sequenceOutputOp->getOperands()) {
-        finalizePlannedValue(operand);
-    }
-}
-
-void ResourcePlanner::finalizePlannedValue(Value value) {
-    auto planIt = _resourcePlan.plannedValues.find(value);
-    if (planIt == _resourcePlan.plannedValues.end()) {
-        return;
-    }
-
-    auto &plan = planIt->second;
-    if (plan.resourceOrder.empty()) {
-        return;
-    }
-
-    if (plan.resourceOrder.size() > 1 && !plan.aliasGroupId.has_value()) {
-        assert(_nextAliasGroupId != INVALID_ALIAS_GROUP_ID && "exhausted alias group ids");
-        plan.aliasGroupId = _nextAliasGroupId++;
-    }
-}
-
 ResourcePlanEncoder::ResourcePlanEncoder(const ResourcePlan &resourcePlan, VGFBuilder &vgfBuilder)
     : _resourcePlan(resourcePlan), _vgfBuilder(vgfBuilder) {}
 
@@ -601,30 +495,19 @@ ResourceRef ResourcePlanEncoder::createResource(const PlannedValue &plan, const 
     switch (resourceKey.category) {
     case ResourceCategory::INPUT:
         return _vgfBuilder.getEncoder()->AddInputResource(resourceKey.view.descriptorType, resourceKey.view.vkFormat,
-                                                          plan.shape, {}, plan.aliasGroupId);
+                                                          plan.shape, {});
     case ResourceCategory::OUTPUT:
         return _vgfBuilder.getEncoder()->AddOutputResource(resourceKey.view.descriptorType, resourceKey.view.vkFormat,
-                                                           plan.shape, {}, plan.aliasGroupId);
+                                                           plan.shape, {});
     case ResourceCategory::INTERMEDIATE:
-        return _vgfBuilder.getEncoder()->AddIntermediateResource(
-            resourceKey.view.descriptorType, resourceKey.view.vkFormat, plan.shape, {}, plan.aliasGroupId);
+        return _vgfBuilder.getEncoder()->AddIntermediateResource(resourceKey.view.descriptorType,
+                                                                 resourceKey.view.vkFormat, plan.shape, {});
     case ResourceCategory::CONSTANT:
         assert(false && "planned VGF resources must not be constants");
         return ResourceRef{0};
     }
     assert(false && "invalid planned VGF resource category");
     return ResourceRef{0};
-}
-
-void ResourcePlanEncoder::addSamplerConfig(ResourceRef resourceRef, const ResourceKey &resourceKey) {
-    if (!resourceKey.samplerConfig.has_value()) {
-        return;
-    }
-
-    const auto &samplerConfig = *resourceKey.samplerConfig;
-    _vgfBuilder.getEncoder()->AddSamplerConfig(resourceRef, samplerConfig.minFilter, samplerConfig.magFilter,
-                                               samplerConfig.addressModeU, samplerConfig.addressModeV,
-                                               samplerConfig.borderColor);
 }
 
 ResourceRef ResourcePlanEncoder::getOrCreateResource(Value value, const ResourceKey &resourceKey) {
@@ -636,7 +519,6 @@ ResourceRef ResourcePlanEncoder::getOrCreateResource(Value value, const Resource
     auto resourceIt = encodedValue.resources.find(resourceKey);
     if (resourceIt == encodedValue.resources.end()) {
         const ResourceRef resourceRef = createResource(plan, resourceKey);
-        addSamplerConfig(resourceRef, resourceKey);
         resourceIt = encodedValue.resources.emplace(resourceKey, resourceRef).first;
     }
 

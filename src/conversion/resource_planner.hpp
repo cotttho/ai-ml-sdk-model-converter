@@ -22,26 +22,6 @@ using namespace mlsdk::vgflib;
 
 using SegmentId = uint64_t;
 
-constexpr uint32_t UNSET_SAMPLER_VALUE = std::numeric_limits<uint32_t>::max();
-
-struct SamplerConfigValues {
-    uint32_t minFilter = UNSET_SAMPLER_VALUE;
-    uint32_t magFilter = UNSET_SAMPLER_VALUE;
-    uint32_t addressModeU = UNSET_SAMPLER_VALUE;
-    uint32_t addressModeV = UNSET_SAMPLER_VALUE;
-    uint32_t borderColor = UNSET_SAMPLER_VALUE;
-
-    bool operator==(const SamplerConfigValues &other) const {
-        return minFilter == other.minFilter && magFilter == other.magFilter && addressModeU == other.addressModeU &&
-               addressModeV == other.addressModeV && borderColor == other.borderColor;
-    }
-
-    bool operator<(const SamplerConfigValues &other) const {
-        return std::tie(minFilter, magFilter, addressModeU, addressModeV, borderColor) <
-               std::tie(other.minFilter, other.magFilter, other.addressModeU, other.addressModeV, other.borderColor);
-    }
-};
-
 struct ResourceViewKey {
     DescriptorType descriptorType;
     FormatType vkFormat;
@@ -58,15 +38,14 @@ struct ResourceViewKey {
 struct ResourceKey {
     ResourceCategory category;
     ResourceViewKey view;
-    std::optional<SamplerConfigValues> samplerConfig;
 
     bool operator==(const ResourceKey &other) const {
-        return category == other.category && view == other.view && samplerConfig == other.samplerConfig;
+        return category == other.category && view == other.view;
     }
 
     bool operator<(const ResourceKey &other) const {
-        return std::tie(category, view.descriptorType, view.vkFormat, samplerConfig) <
-               std::tie(other.category, other.view.descriptorType, other.view.vkFormat, other.samplerConfig);
+        return std::tie(category, view.descriptorType, view.vkFormat) <
+               std::tie(other.category, other.view.descriptorType, other.view.vkFormat);
     }
 };
 
@@ -85,7 +64,6 @@ struct PlannedValue {
     std::vector<int64_t> shape;
     std::vector<ResourceKey> resourceOrder;
     std::optional<ResourceKey> producerResource;
-    std::optional<AliasGroupId> aliasGroupId;
 };
 
 struct SegmentAttachment {
@@ -139,8 +117,7 @@ class ResourcePlanner {
     bool getSequenceOutputUnsigned(uint32_t outputIndex) const;
     FailureOr<std::vector<int64_t>> getValueShape(Value value) const;
     LogicalResult getGraphView(Value value, StringRef role, StringRef segmentName, ResourceViewKey &view) const;
-    static ResourceKey makeResourceKey(ResourceCategory category, const ResourceViewKey &view,
-                                       std::optional<SamplerConfigValues> samplerConfig = std::nullopt);
+    static ResourceKey makeResourceKey(ResourceCategory category, const ResourceViewKey &view);
     FailureOr<PlannedValue *> ensurePlannedValue(Value value, std::optional<uint32_t> bindingIndex = std::nullopt);
     void appendResourceRequirement(PlannedValue &plan, const ResourceKey &resourceKey, bool isProducer);
     void appendAttachment(std::vector<SegmentAttachment> &attachments, SegmentId segmentId, Value value, bool isOutput,
@@ -151,14 +128,11 @@ class ResourcePlanner {
     bool hasResourceCategory(const PlannedValue &plan, ResourceCategory category) const;
     std::optional<ResourceKey> getCanonicalResource(const PlannedValue &plan, ResourceCategory category) const;
     LogicalResult collectSequenceOutputs();
-    void finalizePlannedValues();
-    void finalizePlannedValue(Value value);
 
     vgf::SequenceOp &_sequenceOp;
     Operation *_sequenceOutputOp = nullptr;
     DenseMap<Value, uint32_t> _sequenceOutputIndices;
     ResourcePlan _resourcePlan;
-    AliasGroupId _nextAliasGroupId = 0;
     uint32_t _bindingId = 0;
 };
 
@@ -172,7 +146,6 @@ class ResourcePlanEncoder {
     static std::optional<ResourceKey> getCanonicalResource(const PlannedValue &plan, ResourceCategory category);
     void addBindingToDescriptorSet(SegmentId segmentId, int64_t descriptorSet, BindingSlotRef bindingSlotRef);
     ResourceRef createResource(const PlannedValue &plan, const ResourceKey &resourceKey);
-    void addSamplerConfig(ResourceRef resourceRef, const ResourceKey &resourceKey);
     ResourceRef getOrCreateResource(Value value, const ResourceKey &resourceKey);
     BindingSlotRef getOrCreateLogicalBindingSlot(Value value, const ResourceKey &resourceKey);
     BindingSlotRef getOrCreateDescriptorBindingSlot(Value value, const ResourceKey &resourceKey, uint32_t binding);

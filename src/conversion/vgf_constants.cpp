@@ -4,7 +4,7 @@
  */
 
 #include "include/passes.hpp"
-#include "mlir/Conversion/TosaToSPIRVTosa/TosaToSPIRVTosa.h"
+#include "mlir/Conversion/TosaToSPIRV/ConvertTosaConstants.h"
 #include "mlir/Target/SPIRV/Serialization.h"
 #include "utils.hpp"
 #include "vgf_builder.hpp"
@@ -56,9 +56,9 @@ class VGFConstantsPass : public impl::VGFConstantsPassBase<VGFConstantsPass> {
         std::map<uint32_t, tosa::ConstOp> constantsById;
         moduleOp.walk([&constantsById](Operation *op) {
             if (auto constOp = llvm::dyn_cast<tosa::ConstOp>(op)) {
-                auto id = constOp->getAttrOfType<IntegerAttr>(tosa::graphARMGraphConstantIdAttrName);
-                if (id != nullptr) {
-                    constantsById.try_emplace(static_cast<uint32_t>(id.getInt()), constOp);
+                auto id = tosa::getGraphIdForConst(constOp.getOperation());
+                if (id.has_value()) {
+                    constantsById.try_emplace(*id, constOp);
                 }
             }
         });
@@ -86,7 +86,7 @@ class VGFConstantsPass : public impl::VGFConstantsPassBase<VGFConstantsPass> {
                 sparsityDimension = attr.getInt();
             }
 
-            auto attrVal = llvm::dyn_cast<DenseTypedElementsAttr>(constOp.getValuesAttr());
+            auto attrVal = llvm::dyn_cast<DenseElementsAttr>(constOp.getValuesAttr());
             serializeConstantData(attrVal, resourceRef, sparsityDimension);
             ++expectedId;
         }

@@ -5,7 +5,8 @@
 
 #include "compiler.hpp"
 #include "include/passes.hpp"
-#include "mlir/Conversion/TosaToSPIRVTosa/TosaToSPIRVTosa.h"
+#include "mlir/Conversion/TosaToSPIRV/ConvertTosaConstants.h"
+#include "mlir/Conversion/TosaToSPIRV/TosaToSPIRV.h"
 #include "mlir/Dialect/SPIRV/IR/SPIRVDialect.h"
 #include "mlir/Dialect/SPIRV/Transforms/Passes.h"
 #include "mlir/Dialect/Tosa/Transforms/Passes.h"
@@ -41,9 +42,9 @@ std::unique_ptr<Pass> createConfiguredTosaSerializeJSONPass(const std::string &f
     }
     return pass;
 }
-std::unique_ptr<Pass> createConfiguredTosaToSPIRVTosaPass(bool analysis,
-                                                          const std::vector<std::string> &customOpDomainToOpcode) {
-    auto pass = mlir::tosa::createTosaToSPIRVTosa(analysis);
+std::unique_ptr<Pass> createConfiguredTosaToSPIRVPass(bool analysis,
+                                                      const std::vector<std::string> &customOpDomainToOpcode) {
+    auto pass = mlir::tosa::createTosaToSPIRV(analysis);
     if (customOpDomainToOpcode.empty()) {
         return pass;
     }
@@ -110,15 +111,9 @@ void Compiler::SetPassManager() {
         _pm.addPass(createTypeNarrowingPass({_options.type_narrowing}));
     }
 
-    {
-        OpPassManager &funcNestedPM = _pm.nest<func::FuncOp>();
-        funcNestedPM.addPass(mlir::tosa::createTosaNarrowI64ToI32Pass({true, true}));
-        funcNestedPM.addPass(mlir::tosa::createTosaNarrowF64ToF32Pass({true, true}));
-    }
-
     if (_options.tosa_serialize) {
         if (_options.tosa_fb_schema.empty()) {
-            _pm.addPass(mlir::tosa::createTosaSerializePass(_options.filename_output));
+            _pm.addPass(mlir::tosa::createTosaSerializePass());
         } else {
             _pm.addPass(createConfiguredTosaSerializeJSONPass(_options.filename_output, _options.tosa_fb_schema));
         }
@@ -132,7 +127,7 @@ void Compiler::SetPassManager() {
             // Run constant folding before assigning graph constant IDs so fold-created constants get stable,
             // sequence-wide IDs before partitioning clones them into graph segments.
             funcNestedPM.addPass(mlir::tosa::createTosaLayerwiseConstantFoldPass());
-            funcNestedPM.addPass(mlir::tosa::createTosaToSPIRVTosaMarkGraphConstants());
+            funcNestedPM.addPass(mlir::tosa::createConvertTosaConstantsPass());
         }
         _pm.addPass(createModelPartitionMarkingPass());
         _pm.addPass(createModelPartitioningPass({_options.analysis}));
@@ -140,7 +135,7 @@ void Compiler::SetPassManager() {
         _pm.addPass(createCheckConstantSparsityPass());
         _pm.addPass(createVGFConstantsPass(builder));
         _pm.nest<vgf::SequenceOp>().addPass(createAssignGraphARMInterfaceVarABIPass());
-        _pm.addPass(createConfiguredTosaToSPIRVTosaPass(_options.analysis, _options.custom_op_domain_to_opcode));
+        _pm.addPass(createConfiguredTosaToSPIRVPass(_options.analysis, _options.custom_op_domain_to_opcode));
 
         {
             // SPIRV Module Passes

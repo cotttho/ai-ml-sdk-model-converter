@@ -28,16 +28,6 @@ namespace mlir::model_converter_passes {
 #include "passes.hpp.inc"
 namespace {
 
-std::optional<ShaderType> toShaderType(const StringRef language) {
-    if (language == "GLSL") {
-        return ShaderType::GLSL;
-    }
-    if (language == "HLSL") {
-        return ShaderType::HLSL;
-    }
-    return std::nullopt;
-}
-
 using detail::ResourcePlanEncoder;
 
 class SerializeVGFPass : public impl::SerializeVGFPassBase<SerializeVGFPass> {
@@ -121,7 +111,7 @@ class SerializeVGFPass : public impl::SerializeVGFPassBase<SerializeVGFPass> {
             if (segmentType == vgf::SegmentTypeEnum::COMPUTE) {
                 segmentWalkResult = segmentOp.walk([&](vgf::ShaderPlaceholderOp shaderPlaceholderOp) {
                     // Add shader module table entry
-                    const auto computeModuleRef = [&]() {
+                    const auto computeModuleRef = [&]() -> FailureOr<ModuleRef> {
                         auto shaderLanguageAttr = shaderPlaceholderOp.getShaderLanguageAttr();
                         if (shaderLanguageAttr) {
                             auto shaderCodeAttr = shaderPlaceholderOp.getShaderCodeAttr();
@@ -139,28 +129,30 @@ class SerializeVGFPass : public impl::SerializeVGFPassBase<SerializeVGFPass> {
                                         ModuleType::COMPUTE, segmentName.str(),
                                         shaderPlaceholderOp.getEntryPointAttr().str(), binaryCode);
                                 }
-                            } else if (auto shaderSourceAttr = llvm::dyn_cast_if_present<StringAttr>(shaderCodeAttr)) {
-                                const auto shaderType = toShaderType(shaderLanguageAttr.str());
-                                if (shaderType.has_value()) {
-                                    return _VGFBuilder->getEncoder()->AddModule(
-                                        ModuleType::COMPUTE, segmentName.str(),
-                                        shaderPlaceholderOp.getEntryPointAttr().str(), shaderType.value(),
-                                        shaderSourceAttr.str());
-                                }
+                                shaderPlaceholderOp.emitError("expected SPIR-V shader_code to be a dense i32 array");
+                                return failure();
                             }
+
+                            shaderPlaceholderOp.emitError(
+                                "inline shader source is not supported by this VGF encoder; provide SPIR-V shader_code "
+                                "or omit shader_code for a placeholder module");
+                            return failure();
                         }
 
-                        return _VGFBuilder->getEncoder()->AddModule(ModuleType::COMPUTE, segmentName.str(),
-                                                                    shaderPlaceholderOp.getEntryPointAttr().str());
+                        return _VGFBuilder->getEncoder()->AddPlaceholderModule(
+                            ModuleType::COMPUTE, segmentName.str(), shaderPlaceholderOp.getEntryPointAttr().str());
                     }();
+                    if (failed(computeModuleRef)) {
+                        return WalkResult::interrupt();
+                    }
 
                     const auto descriptorSetInfos = [&]() {
                         std::vector<DescriptorSetInfoRef> descriptorSetInfos = {};
                         auto descriptorSetBindingsIt = encodedResourcePlan.segmentDescriptorSetBindings.find(segmentId);
                         if (descriptorSetBindingsIt != encodedResourcePlan.segmentDescriptorSetBindings.end()) {
-                            for (const auto &[descriptorSetIndex, bindings] : descriptorSetBindingsIt->second) {
-                                descriptorSetInfos.push_back(
-                                    _VGFBuilder->getEncoder()->AddDescriptorSetInfo(bindings, descriptorSetIndex));
+                            for (const auto &descriptorSetAndBindings : descriptorSetBindingsIt->second) {
+                                descriptorSetInfos.push_back(_VGFBuilder->getEncoder()->AddDescriptorSetInfo(
+                                    descriptorSetAndBindings.second));
                             }
                         }
                         return descriptorSetInfos;
@@ -173,7 +165,7 @@ class SerializeVGFPass : public impl::SerializeVGFPassBase<SerializeVGFPass> {
                                                                    static_cast<uint32_t>(workgroupSizes[2])};
 
                     _VGFBuilder->getEncoder()->AddSegmentInfo(
-                        computeModuleRef, "compute_segment_" + std::to_string(computeSegmentId++), descriptorSetInfos,
+                        *computeModuleRef, "compute_segment_" + std::to_string(computeSegmentId++), descriptorSetInfos,
                         segmentInputBindings, segmentOutputBindings, {}, dispatchShape);
 
                     return WalkResult::advance();

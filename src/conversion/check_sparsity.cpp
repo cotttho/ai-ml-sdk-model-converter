@@ -33,7 +33,10 @@ class CheckConstantSparsityPass : public impl::CheckConstantSparsityPassBase<Che
                 return;
             }
 
-            mlir::DenseTypedElementsAttr value = llvm::dyn_cast<DenseTypedElementsAttr>(definingOp->getAttr("values"));
+            auto value = llvm::dyn_cast_or_null<DenseElementsAttr>(definingOp->getAttr("values"));
+            if (!value) {
+                return;
+            }
 
             const auto shape = convertShapedType(op->getOperand(1).getType()).getShape();
 
@@ -62,7 +65,7 @@ class CheckConstantSparsityPass : public impl::CheckConstantSparsityPassBase<Che
 
   private:
     bool isOpSupported(Operation *op);
-    bool checkSparsity(mlir::DenseTypedElementsAttr &value, int64_t otherDim, int64_t icDim, int64_t zp);
+    bool checkSparsity(mlir::DenseElementsAttr value, int64_t otherDim, int64_t icDim, int64_t zp);
     template <typename T> bool checkSparsityLoop(const T *data, int64_t otherDim, int64_t icDim, T zp);
 };
 
@@ -70,7 +73,7 @@ bool CheckConstantSparsityPass::isOpSupported(Operation *op) {
     return llvm::isa<tosa::Conv2DOp>(op) || llvm::isa<tosa::TransposeConv2DOp>(op);
 }
 
-bool CheckConstantSparsityPass::checkSparsity(mlir::DenseTypedElementsAttr &value, int64_t otherDim, int64_t icDim,
+bool CheckConstantSparsityPass::checkSparsity(mlir::DenseElementsAttr value, int64_t otherDim, int64_t icDim,
                                               int64_t zp) {
 
     mlir::Type elementType = value.getElementType();

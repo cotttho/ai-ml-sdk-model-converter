@@ -143,7 +143,7 @@ set(CONVERTER_PASS_LIB_DEPENDENCIES
     MLIRSPIRVDialect
     MLIRSPIRVSerialization
     MLIRTosaDialect
-    MLIRTosaToSPIRVTosa
+    MLIRTosaToSPIRV
     MLIRTransforms
     VGF::vgf
 )
