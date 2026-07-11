@@ -25,6 +25,7 @@ int main(int argc, char **argv) {
     registerTosaShapedVerificationPass();
     registerModelPartitioningPass();
     registerSerializeVGFPass();
+    registerTosaRescaleFusionMarkingPass();
     registerTypeNarrowingPass();
     registerTosaRescaleSimplifyPass();
     registerVGFConstantsPass();

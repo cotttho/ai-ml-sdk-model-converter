@@ -115,4 +115,15 @@ def TosaRescaleSimplifyPass : Pass<"tosa-rescale-simplify", "func::FuncOp"> {
   }];
 }
 
+def TosaRescaleFusionMarkingPass : Pass<"tosa-rescale-fusion-marking", "func::FuncOp"> {
+  let summary = "Mark adjacent TOSA rescale chains that require backend fusion";
+  let description = [{
+    Annotate adjacent single-use TOSA rescale chains that cannot be removed by
+    exact graph rewriting but are candidates for a backend implementation that
+    preserves the two-stage arithmetic in one fused kernel.  The pass marks both
+    producer and consumer rescale operations with rescale_fusion_kind,
+    rescale_fusion_priority, and rescale_fusion_role attributes.
+  }];
+}
+
 #endif // MLIR_CONVERSION_PASSES

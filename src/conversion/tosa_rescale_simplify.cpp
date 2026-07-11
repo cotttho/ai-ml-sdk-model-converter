@@ -20,8 +20,13 @@
 
 namespace mlir::model_converter_passes {
 #define GEN_PASS_DEF_TOSARESCALESIMPLIFYPASS
+#define GEN_PASS_DEF_TOSARESCALEFUSIONMARKINGPASS
 #include "passes.hpp.inc"
 namespace {
+
+constexpr const char *rescaleFusionKindAttrName = "rescale_fusion_kind";
+constexpr const char *rescaleFusionPriorityAttrName = "rescale_fusion_priority";
+constexpr const char *rescaleFusionRoleAttrName = "rescale_fusion_role";
 
 std::optional<int64_t> getScalarInt(Value value) {
     auto constOp = value.getDefiningOp<tosa::ConstOp>();
@@ -287,6 +292,56 @@ bool isIdentityClamp(tosa::ClampOp clampOp) {
     return *minVal <= inputRange->first && *maxVal >= inputRange->second;
 }
 
+bool hasDenseIntConst(Value value) {
+    auto constOp = value.getDefiningOp<tosa::ConstOp>();
+    if (!constOp)
+        return false;
+
+    return llvm::isa<DenseIntElementsAttr>(constOp.getValuesAttr());
+}
+
+bool hasStaticRescaleParams(tosa::RescaleOp rescaleOp) {
+    return hasDenseIntConst(rescaleOp.getMultiplier()) && hasDenseIntConst(rescaleOp.getShift()) &&
+           getScalarInt(rescaleOp.getInputZp()) && getScalarInt(rescaleOp.getOutputZp());
+}
+
+struct RescaleFusionCandidate {
+    const char *kind;
+    const char *priority;
+};
+
+std::optional<RescaleFusionCandidate> classifyBackendFusionCandidate(tosa::RescaleOp producerOp,
+                                                                     tosa::RescaleOp consumerOp) {
+    if (!producerOp || !producerOp.getOutput().hasOneUse())
+        return std::nullopt;
+
+    if (!hasStaticRescaleParams(producerOp) || !hasStaticRescaleParams(consumerOp))
+        return std::nullopt;
+
+    if (isIdentityRescale(producerOp) || isIdentityRescale(consumerOp))
+        return std::nullopt;
+
+    if (producerOp.getPerChannel() || consumerOp.getPerChannel()) {
+        return RescaleFusionCandidate{"two_stage_per_channel_backend_analysis", "medium"};
+    }
+
+    const std::optional<int64_t> producerLeftShift = getExactLeftShift(producerOp);
+    const std::optional<int64_t> consumerShift = getScalarInt(consumerOp.getShift());
+    if (producerLeftShift && consumerShift) {
+        const int64_t adjustedConsumerShift = *consumerShift - *producerLeftShift;
+        if (adjustedConsumerShift >= 1 && adjustedConsumerShift <= 62 && scalarRescaleCannotClip(producerOp) &&
+            !leftShiftFoldIsExhaustivelyEquivalent(producerOp, consumerOp, adjustedConsumerShift)) {
+            return RescaleFusionCandidate{"two_stage_scalar_left_shift_rounding", "high"};
+        }
+    }
+
+    if (!scalarRescaleCannotClip(producerOp)) {
+        return RescaleFusionCandidate{"two_stage_scalar_with_intermediate_clamp", "medium"};
+    }
+
+    return std::nullopt;
+}
+
 Value createScalarShiftConst(PatternRewriter &rewriter, Location loc, Value originalShift, int64_t value) {
     auto shiftType = llvm::cast<ShapedType>(originalShift.getType());
     auto elementType = llvm::cast<IntegerType>(shiftType.getElementType());
@@ -431,12 +486,57 @@ class FoldUnitScaleConsumerIntoProducerPattern final : public OpRewritePattern<t
     }
 };
 
+class MarkBackendFusionCandidatePattern final : public OpRewritePattern<tosa::RescaleOp> {
+  public:
+    using OpRewritePattern<tosa::RescaleOp>::OpRewritePattern;
+
+    LogicalResult matchAndRewrite(tosa::RescaleOp consumerOp, PatternRewriter &rewriter) const override {
+        if (consumerOp->hasAttr(rescaleFusionKindAttrName))
+            return failure();
+
+        auto producerOp = consumerOp.getInput().getDefiningOp<tosa::RescaleOp>();
+        if (!producerOp || producerOp->hasAttr(rescaleFusionKindAttrName))
+            return failure();
+
+        const std::optional<RescaleFusionCandidate> candidate =
+            classifyBackendFusionCandidate(producerOp, consumerOp);
+        if (!candidate)
+            return failure();
+
+        StringAttr kindAttr = rewriter.getStringAttr(candidate->kind);
+        StringAttr priorityAttr = rewriter.getStringAttr(candidate->priority);
+
+        rewriter.modifyOpInPlace(producerOp, [&] {
+            producerOp->setAttr(rescaleFusionKindAttrName, kindAttr);
+            producerOp->setAttr(rescaleFusionPriorityAttrName, priorityAttr);
+            producerOp->setAttr(rescaleFusionRoleAttrName, rewriter.getStringAttr("producer"));
+        });
+        rewriter.modifyOpInPlace(consumerOp, [&] {
+            consumerOp->setAttr(rescaleFusionKindAttrName, kindAttr);
+            consumerOp->setAttr(rescaleFusionPriorityAttrName, priorityAttr);
+            consumerOp->setAttr(rescaleFusionRoleAttrName, rewriter.getStringAttr("consumer"));
+        });
+        return success();
+    }
+};
+
 class TosaRescaleSimplifyPass final : public impl::TosaRescaleSimplifyPassBase<TosaRescaleSimplifyPass> {
     void runOnOperation() override {
         RewritePatternSet patterns(&getContext());
         patterns.add<FoldExactLeftShiftProducerIntoConsumerPattern, FoldUnitScaleConsumerIntoProducerPattern,
                      FoldUnitScaleRebaseIntoConsumerPattern, RemoveIdentityClampPattern, RemoveIdentityRescalePattern>(
             &getContext());
+
+        if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
+            return signalPassFailure();
+    }
+};
+
+class TosaRescaleFusionMarkingPass final
+    : public impl::TosaRescaleFusionMarkingPassBase<TosaRescaleFusionMarkingPass> {
+    void runOnOperation() override {
+        RewritePatternSet patterns(&getContext());
+        patterns.add<MarkBackendFusionCandidatePattern>(&getContext());
 
         if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
             return signalPassFailure();

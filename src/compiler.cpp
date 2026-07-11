@@ -99,6 +99,9 @@ void Compiler::SetPassManager() {
         // Inline dense resources for now until properly handled throughout the stack
         funcNestedPM.addPass(createDenseResourceInlinerPass());
         funcNestedPM.addPass(createTosaRescaleSimplifyPass());
+        if (!_options.tosa_serialize) {
+            funcNestedPM.addPass(createTosaRescaleFusionMarkingPass());
+        }
     }
 
     if (_options.require_static_shape) {
