@@ -28,7 +28,7 @@ int main(int argc, char **argv) {
     registerTypeNarrowingPass();
     registerTosaRescaleSimplifyPass();
     registerVGFConstantsPass();
-    tosa::registerTosaPasses();
+    tosa::registerTosaOptPasses();
 
     return asMainReturnCode(MlirOptMain(argc, argv, "ML SDK Model Converter MLIR optimizer driver\n", registry));
 }
