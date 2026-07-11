@@ -107,6 +107,9 @@ def TosaRescaleSimplifyPass : Pass<"tosa-rescale-simplify", "func::FuncOp"> {
     unit-scale rebase, the intermediate tensor is single-use, and the removed
     intermediate clamp is proven not to affect any value in the interpreted
     input range.
+    Non-clipping scalar producers that are exact power-of-two left shifts can
+    also be folded into a scalar single-round consumer by reducing the consumer
+    shift.
   }];
 }
 

@@ -86,4 +86,27 @@ module attributes {tosa.description = "TOSA rescale simplify test"} {
     %out = tosa.rescale %producer, %mult_identity, %shift_identity, %zero_i8, %zero_i16 {input_unsigned = false, output_unsigned = false, per_channel = false, rounding_mode = SINGLE_ROUND, scale32 = true} : (tensor<1x4xi8>, tensor<1xi32>, tensor<1xi8>, tensor<1xi8>, tensor<1xi16>) -> tensor<1x4xi16>
     return %out : tensor<1x4xi16>
   }
+
+  // CHECK-LABEL: func.func @left_shift_producer_fold(
+  // CHECK-NOT: dense<1073741824>
+  // CHECK: %[[MULT:.*]] = "tosa.const"() <{values = dense<1965721573> : tensor<1xi32>}> : () -> tensor<1xi32>
+  // CHECK: %[[SHIFT:.*]] = "tosa.const"() <{values = dense<15> : tensor<1xi8>}> : () -> tensor<1xi8>
+  // CHECK: %[[INPUT_ZP:.*]] = "tosa.const"() <{values = dense<-128> : tensor<1xi8>}> : () -> tensor<1xi8>
+  // CHECK: %[[OUTPUT_ZP:.*]] = "tosa.const"() <{values = dense<0> : tensor<1xi32>}> : () -> tensor<1xi32>
+  // CHECK: tosa.rescale %arg0, %[[MULT]], %[[SHIFT]], %[[INPUT_ZP]], %[[OUTPUT_ZP]]
+  // CHECK-SAME: input_unsigned = false
+  // CHECK-SAME: output_unsigned = false
+  // CHECK-NOT: tosa.rescale
+  func.func @left_shift_producer_fold(%arg0: tensor<1x4xi8>) -> tensor<1x4xi32> {
+    %mult_shift = "tosa.const"() {values = dense<1073741824> : tensor<1xi32>} : () -> tensor<1xi32>
+    %shift_shift = "tosa.const"() {values = dense<10> : tensor<1xi8>} : () -> tensor<1xi8>
+    %input_zp = "tosa.const"() {values = dense<-128> : tensor<1xi8>} : () -> tensor<1xi8>
+    %intermediate_zp = "tosa.const"() {values = dense<0> : tensor<1xi32>} : () -> tensor<1xi32>
+    %producer = tosa.rescale %arg0, %mult_shift, %shift_shift, %input_zp, %intermediate_zp {input_unsigned = false, output_unsigned = false, per_channel = false, rounding_mode = SINGLE_ROUND, scale32 = true} : (tensor<1x4xi8>, tensor<1xi32>, tensor<1xi8>, tensor<1xi8>, tensor<1xi32>) -> tensor<1x4xi32>
+
+    %mult_consumer = "tosa.const"() {values = dense<1965721573> : tensor<1xi32>} : () -> tensor<1xi32>
+    %shift_consumer = "tosa.const"() {values = dense<35> : tensor<1xi8>} : () -> tensor<1xi8>
+    %out = tosa.rescale %producer, %mult_consumer, %shift_consumer, %intermediate_zp, %intermediate_zp {input_unsigned = false, output_unsigned = false, per_channel = false, rounding_mode = SINGLE_ROUND, scale32 = true} : (tensor<1x4xi32>, tensor<1xi32>, tensor<1xi8>, tensor<1xi32>, tensor<1xi32>) -> tensor<1x4xi32>
+    return %out : tensor<1x4xi32>
+  }
 }

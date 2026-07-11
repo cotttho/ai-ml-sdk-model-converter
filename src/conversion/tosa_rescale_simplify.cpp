@@ -105,6 +105,34 @@ std::optional<int64_t> applyScaleToBound(int64_t value, int64_t multiplier, int6
     return static_cast<int64_t>(result);
 }
 
+std::optional<int64_t> getPowerOfTwoExponent(int64_t value) {
+    if (value <= 0 || (value & (value - 1)) != 0)
+        return std::nullopt;
+
+    int64_t exponent = 0;
+    while (value > 1) {
+        value >>= 1;
+        ++exponent;
+    }
+    return exponent;
+}
+
+std::optional<int64_t> getExactLeftShift(tosa::RescaleOp rescaleOp) {
+    if (rescaleOp.getPerChannel())
+        return std::nullopt;
+
+    const std::optional<int64_t> multiplier = getScalarInt(rescaleOp.getMultiplier());
+    const std::optional<int64_t> shift = getScalarInt(rescaleOp.getShift());
+    if (!multiplier || !shift || *shift < 1 || *shift > 62)
+        return std::nullopt;
+
+    const std::optional<int64_t> exponent = getPowerOfTwoExponent(*multiplier);
+    if (!exponent || *exponent <= *shift)
+        return std::nullopt;
+
+    return *exponent - *shift;
+}
+
 bool scalarRescaleCannotClip(tosa::RescaleOp rescaleOp) {
     if (rescaleOp.getPerChannel())
         return false;
@@ -157,6 +185,13 @@ bool isIdentityRescale(tosa::RescaleOp rescaleOp) {
     return isUnitScale(rescaleOp);
 }
 
+Value createScalarShiftConst(PatternRewriter &rewriter, Location loc, Value originalShift, int64_t value) {
+    auto shiftType = llvm::cast<ShapedType>(originalShift.getType());
+    auto elementType = llvm::cast<IntegerType>(shiftType.getElementType());
+    auto shiftAttr = DenseElementsAttr::get(shiftType, rewriter.getIntegerAttr(elementType, value));
+    return tosa::ConstOp::create(rewriter, loc, shiftType, shiftAttr);
+}
+
 class RemoveIdentityRescalePattern final : public OpRewritePattern<tosa::RescaleOp> {
   public:
     using OpRewritePattern<tosa::RescaleOp>::OpRewritePattern;
@@ -166,6 +201,51 @@ class RemoveIdentityRescalePattern final : public OpRewritePattern<tosa::Rescale
             return failure();
 
         rewriter.replaceOp(rescaleOp, rescaleOp.getInput());
+        return success();
+    }
+};
+
+class FoldExactLeftShiftProducerIntoConsumerPattern final : public OpRewritePattern<tosa::RescaleOp> {
+  public:
+    using OpRewritePattern<tosa::RescaleOp>::OpRewritePattern;
+
+    LogicalResult matchAndRewrite(tosa::RescaleOp consumerOp, PatternRewriter &rewriter) const override {
+        auto producerOp = consumerOp.getInput().getDefiningOp<tosa::RescaleOp>();
+        if (!producerOp || !producerOp.getOutput().hasOneUse())
+            return failure();
+
+        if (consumerOp.getPerChannel() || consumerOp.getRoundingMode() != tosa::RoundingMode::SINGLE_ROUND)
+            return failure();
+
+        const std::optional<int64_t> producerLeftShift = getExactLeftShift(producerOp);
+        const std::optional<int64_t> consumerShift = getScalarInt(consumerOp.getShift());
+        if (!producerLeftShift || !consumerShift)
+            return failure();
+
+        const int64_t adjustedConsumerShift = *consumerShift - *producerLeftShift;
+        if (adjustedConsumerShift < 1 || adjustedConsumerShift > 62)
+            return failure();
+
+        if (!scalarRescaleCannotClip(producerOp))
+            return failure();
+
+        const std::optional<int64_t> producerOutputZp = getScalarInt(producerOp.getOutputZp());
+        const std::optional<int64_t> consumerInputZp = getScalarInt(consumerOp.getInputZp());
+        if (!producerOutputZp || !consumerInputZp || *producerOutputZp != *consumerInputZp)
+            return failure();
+
+        if (producerOp.getOutputUnsigned() != consumerOp.getInputUnsigned())
+            return failure();
+
+        rewriter.setInsertionPoint(consumerOp);
+        Value adjustedShift =
+            createScalarShiftConst(rewriter, consumerOp.getLoc(), consumerOp.getShift(), adjustedConsumerShift);
+        rewriter.replaceOpWithNewOp<tosa::RescaleOp>(
+            consumerOp, consumerOp.getType(), producerOp.getInput(), consumerOp.getMultiplier(), adjustedShift,
+            producerOp.getInputZp(), consumerOp.getOutputZp(), consumerOp.getScale32Attr(),
+            consumerOp.getRoundingModeAttr(), consumerOp.getPerChannelAttr(), producerOp.getInputUnsignedAttr(),
+            consumerOp.getOutputUnsignedAttr());
+        rewriter.eraseOp(producerOp);
         return success();
     }
 };
@@ -236,8 +316,8 @@ class FoldUnitScaleConsumerIntoProducerPattern final : public OpRewritePattern<t
 class TosaRescaleSimplifyPass final : public impl::TosaRescaleSimplifyPassBase<TosaRescaleSimplifyPass> {
     void runOnOperation() override {
         RewritePatternSet patterns(&getContext());
-        patterns.add<FoldUnitScaleConsumerIntoProducerPattern, FoldUnitScaleRebaseIntoConsumerPattern,
-                     RemoveIdentityRescalePattern>(&getContext());
+        patterns.add<FoldExactLeftShiftProducerIntoConsumerPattern, FoldUnitScaleConsumerIntoProducerPattern,
+                     FoldUnitScaleRebaseIntoConsumerPattern, RemoveIdentityRescalePattern>(&getContext());
 
         if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
             return signalPassFailure();
